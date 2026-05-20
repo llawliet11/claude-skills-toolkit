@@ -1,0 +1,46 @@
+.DS_Store
+.local/
+*.zip
+node_modules/
+.env
+.env.*
+!.env.example
+
+# AI Coding Tools — personal/local files only
+# Added by /nf-ignore
+
+# Claude Code (entire .claude/ ignored per repo owner preference)
+.claude/
+CLAUDE.local.md
+
+# Cursor
+.cursorignore
+.cursorindexingignore
+
+# Windsurf/Codeium
+.codeiumignore
+
+# Aider
+.aider*
+
+# Codex CLI
+.codex/
+
+# Continue.dev
+.continue/config.yaml
+.continueignore
+
+# Sourcegraph Cody
+.cody/ignore
+
+# Tabnine
+.tabnine*
+
+# Amazon Q
+.amazonq/
+
+# Supermaven
+.supermaven/
+
+# direnv local env
+.envrc

@@ -1,0 +1,13 @@
+{
+  "_comment": "Slug → absolute cwd registry. Authoritative source for nf-dream normalize/backfill when filling metadata.cwd. Update this file to match the projects you actually have on disk. Slug = the value you use for metadata.project in canonical frontmatter.",
+  "_usage": "Replace the example entries below with your real slugs and absolute paths. Keep one slug per project. Use the same slug as basename of the git repo for consistency.",
+  "version": 1,
+  "generic_cwd": "~/.claude",
+  "slugs": {
+    "generic": "~/.claude",
+
+    "example-blog": "~/projects/example-blog",
+    "example-portfolio": "~/projects/example-portfolio",
+    "example-infra": "~/projects/example-infra"
+  }
+}
