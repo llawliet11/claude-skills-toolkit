@@ -12,7 +12,14 @@ Plain markdown memory is cheap and audit-friendly, but it grows quickly. After a
 
 ## Install
 
-1. Copy the `nf-dream/` folder into `~/.claude/skills/`:
+1. Install [Bun](https://bun.sh) if you don't have it already. The scripts under `scripts/` are Bun TypeScript and need `bun` on `PATH`:
+
+   ```bash
+   curl -fsSL https://bun.sh/install | bash
+   command -v bun  # verify
+   ```
+
+2. Copy the `nf-dream/` folder into `~/.claude/skills/`:
 
    ```bash
    cp -r nf-dream ~/.claude/skills/
@@ -20,7 +27,7 @@ Plain markdown memory is cheap and audit-friendly, but it grows quickly. After a
 
    The end result should be `~/.claude/skills/nf-dream/SKILL.md`.
 
-2. Verify Claude Code sees it. In a new Claude Code session, type `/nf-dream` and the skill should appear in the slash-command list.
+3. Verify Claude Code sees it. In a new Claude Code session, type `/nf-dream` and the skill should appear in the slash-command list.
 
 ## Required environment
 
@@ -40,7 +47,7 @@ If the memory folder is itself a git submodule (a common pattern when you want m
 
 ## Usage
 
-Type `/nf-dream [mode] [--project <slug>] [--no-generic]` from a Claude Code session.
+Type `/nf-dream [mode] [--project <slug>] [--include-generic]` from a Claude Code session.
 
 | Mode | What it does | Writes? |
 |---|---|---|
@@ -78,7 +85,7 @@ Memory folders are usually shared across multiple projects. `nf-dream` auto-scop
 
 Files belonging to other projects are excluded from every operation. Only `lint` is folder-wide (read-only, so it can't hurt).
 
-To include cross-project memories (tagged `metadata.project: generic`), the default behavior is to include them automatically. Pass `--no-generic` to filter strictly to the named slug.
+Cross-project memories (tagged `metadata.project: generic`) are EXCLUDED by default when `--project <slug>` is given. Pass `--include-generic` to also include them when consolidating one project.
 
 ## Safety guarantees
 
@@ -131,11 +138,11 @@ The `HANDOFF-<slug>.md` output template also lives in `SKILL.md` under "Mode: ha
 ### Two registries under `references/`
 
 - **`slug-to-cwd.json`** maps a project slug to its absolute cwd. Shipped with placeholder entries (`example-blog`, `example-portfolio`, `example-infra`). Replace with your real slugs and paths before running `normalize` or `backfill`. Both modes consume it.
-- **`filename-prefix-to-type.md`** documents the convention for inferring `metadata.type` from filename prefix (`project_*` → project, `feedback_*` → feedback, `reference_*` → reference, `user_*` → user). Hard-coded in `scripts/normalize.py`; this file is the human-readable mirror.
+- **`filename-prefix-to-type.md`** documents the convention for inferring `metadata.type` from filename prefix (`project_*` → project, `feedback_*` → feedback, `reference_*` → reference, `user_*` → user). Hard-coded in `scripts/normalize.ts`; this file is the human-readable mirror.
 
 ### Scripts architecture
 
-All heavy lifting lives in `scripts/` (pure Python, no third-party deps). The `SKILL.md` orchestrates: scope resolution, AskUserQuestion confirms, in-session LLM judge. Write-mode scripts default to dry-run, require `--apply` to mutate disk. You can call any script directly with `--json` if you want to script around `nf-dream` from another harness.
+All heavy lifting lives in `scripts/` (Bun TypeScript, no third-party deps, uses `node:*` modules only). The `SKILL.md` orchestrates: scope resolution, AskUserQuestion confirms, in-session LLM judge. Write-mode scripts default to dry-run, require `--apply` to mutate disk. You can call any script directly with `--json` if you want to script around `nf-dream` from another harness. Invoke with `bun <script>.ts`.
 
 ## Anti-patterns
 

@@ -1,6 +1,6 @@
 ---
 name: nf-dream
-description: "Memory consolidation for Claude session memory — reads files under the project's configured memory folder (resolved via `env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` in `.claude/settings.local.json`, with fallbacks to user-scope settings and the documentation-mirror `autoMemoryDirectory` field), auto-scopes to the current project (via `--project <slug>` or cwd basename), classifies each as Now / Next / Done / Future / Reference / Stale, and (optionally) normalizes legacy frontmatter shape, reorganizes `MEMORY.md`, writes a 1-pager `HANDOFF-<slug>.md`, consolidates aged session-end states into `archive/`, dedupes overlapping topics, surfaces stale memories, backfills `metadata.project` to existing files, lints health, or rolls back the last consolidate. Inspired by similar memory-consolidation systems but operates on filesystem memory, not a database. Slash trigger `/nf-dream [mode] [--project <slug>] [--no-generic]`. Modes: `preview` (default, read-only), `normalize`, `reorganize`, `handoff`, `consolidate`, `dedupe`, `stale`, `lint`, `rollback`, `full`, `backfill`, `translate`. Always project-scoped except `lint` / `normalize` / `backfill` which operate folder-wide. Dry-run by default, never deletes, snapshots before writing."
+description: "Memory consolidation for Claude session memory. Reads files under the project's configured memory folder (resolved via `env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` in `.claude/settings.local.json`, with fallbacks to user-scope settings and the documentation-mirror `autoMemoryDirectory` field), auto-scopes to the current project (via `--project <slug>` or cwd basename), classifies each as Now / Next / Done / Future / Reference / Stale, and (optionally) normalizes legacy frontmatter shape, reorganizes `MEMORY.md`, writes a 1-pager `HANDOFF-<slug>.md`, consolidates aged session-end states into `archive/`, dedupes overlapping topics, surfaces stale memories, backfills `metadata.project` to existing files, lints health, or rolls back the last consolidate. Inspired by similar memory-consolidation systems but operates on filesystem memory, not a database. Slash trigger `/nf-dream [mode] [--project <slug>] [--include-generic]`. Modes: `preview` (default, read-only), `normalize`, `reorganize`, `handoff`, `consolidate`, `dedupe`, `merge`, `stale`, `lint`, `rollback`, `full`, `backfill`, `translate`. Always project-scoped except `lint` / `normalize` / `backfill` which operate folder-wide. Dry-run by default, never deletes, snapshots before writing."
 disable-model-invocation: true
 ---
 
@@ -8,17 +8,17 @@ disable-model-invocation: true
 
 Memory consolidation skill for `~/.claude/memory/<scope>/`. The goal: after running, a fresh Claude session should be able to open the project and know — within 30 seconds — what is **done**, what is **next**, what is **in progress**, what is **future**, and what is **stale**.
 
-Conceptually analogous to memory-consolidation systems that cluster knowledge entries, synthesize durable patterns, and soft-archive sources, but operates on **filesystem memory files** instead of database rows, and uses the **running Claude session itself** as the judge (no extra LLM API key required).
+Conceptually analogous to similar memory-consolidation systems (cluster knowledge entries, synthesize durable patterns, soft-archive sources) but operates on **filesystem memory files** instead of database rows, and uses the **running Claude session itself** as the judge (no extra LLM API key required).
 
 ## When NOT to invoke
 
-- The current project has no memory folder configured (no `env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` in `.claude/settings.local.json`, no fallback in user-scope settings, and no `autoMemoryDirectory` anywhere). Tell the user to run `/nf-memory` first to set up a memory folder (the companion `nf-memory` skill in this toolkit handles that, or it can be set manually).
+- The current project has no memory folder configured (no `env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` in `.claude/settings.local.json`, no fallback in user-scope settings, and no `autoMemoryDirectory` anywhere). Tell the user to run `/nf-memory` first to set up a memory folder.
 - The resolved memory folder contains fewer than 5 `*.md` files (excluding `MEMORY.md`). Not enough signal — say so and stop.
 - The user is mid-debug on a live system (prod monitoring, log tailing). Ask first; consolidation is non-urgent.
 
 ## Scope resolution — fallback chain
 
-The Claude Code binary reads `env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` with highest priority. The top-level `autoMemoryDirectory` field at `localSettings` scope is silently ignored by the binary (only `userSettings` / `policySettings` / `flagSettings` honor it), but the companion `nf-memory` skill writes it anyway as a documentation mirror of the env value (so humans inspecting `settings.local.json` see the path clearly). This skill therefore tries multiple locations in order, preferring the canonical env field, and falls back to the mirror field when the env one is absent (which signals a partial / pre-nf-memory state worth warning about).
+The binary's memory resolver reads `env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` with highest priority. The top-level `autoMemoryDirectory` field at `localSettings` scope is silently ignored by the binary (only `userSettings` / `policySettings` / `flagSettings` honor it), but `nf-memory` writes it anyway as a documentation mirror of the env value (so humans inspecting `settings.local.json` see the path clearly). This skill therefore tries multiple locations in order, preferring the canonical env field, and falls back to the mirror field when the env one is absent (which signals a partial / pre-nf-memory state worth warning about).
 
 Resolve in this order — first hit wins:
 
@@ -35,7 +35,7 @@ Resolve in this order — first hit wins:
    jq -r '.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE // .autoMemoryDirectory // empty' "$HOME/.claude/settings.json"
    ```
 4. **`process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`** — set via wrapper script outside settings (rare, but supported by the binary's resolver too).
-5. **Binary default**: `~/.claude/projects/<sanitized-cwd>/memory/` where `<sanitized-cwd>` is the absolute cwd with `/` replaced by `-` and a leading `-` prepended. Example: cwd `/Users/me/projects/example-blog` → `~/.claude/projects/-Users-me-projects-example-blog/memory/`.
+5. **Binary default**: `~/.claude/projects/<sanitized-cwd>/memory/` where `<sanitized-cwd>` is the absolute cwd with `/` replaced by `-` and a leading `-` prepended. Example: cwd `~/projects/example-blog` → `~/.claude/projects/-Users-me-projects-example-blog/memory/`.
 
 Then:
 
@@ -44,11 +44,11 @@ Then:
 - If NOTHING resolved across all five steps → STOP, instruct user to run `/nf-memory`.
 - If the path exists but has < 5 `*.md` files → STOP with a one-line reason ("not enough signal to consolidate").
 
-The skill operates ONLY on this one folder. It does NOT cross into sibling memory folders (e.g. running in `team-a/` will not touch `team-b/`).
+The skill operates ONLY on this one folder. It does NOT cross into sibling memory folders (e.g. running in `org-a/` will not touch `org-b/`).
 
 ## Project-aware filtering (default behavior)
 
-Shared scope folders often mix multiple projects (a `personal/` folder might mix blog, infra, and portfolio notes; a team folder might mix 6+ projects). **Every semantic-write run is auto-scoped to one project**. There is no folder-wide escape hatch for semantic operations — refactoring an entire shared scope's content at once is too risky.
+Shared scope folders mix multiple projects (e.g. `memory/personal/` mixes blog, legal, infra, portfolio; a per-org bucket can mix 6+ projects). **Every semantic-write run is auto-scoped to one project**. There is no folder-wide escape hatch for semantic operations. Refactoring an entire shared scope's content at once is too risky.
 
 Three modes are explicit folder-wide exceptions, by design:
 - `lint` — read-only health check.
@@ -65,39 +65,52 @@ After resolution: AskUserQuestion confirm `"Project detected: <slug>. Filter run
 
 ### Source of truth for `(file → project)` mapping
 
-For each `*.md` file in scope, the skill resolves its project tag via this precedence:
+For each `*.md` file in scope, the skill resolves its project tag via this fallback chain (first match wins). Single source-of-truth is `_lib.resolveFileProject` — every mode calls it instead of reimplementing the logic.
 
-1. **`metadata.project` in file's frontmatter** — authoritative. Set by the host setup's memory-frontmatter rule when Claude saves new memories.
-2. **`<scope>/.nf-dream/project-tags.json` cache** — if frontmatter missing, check cache (invalidate when file mtime > cache `judged_at`).
-3. **Pre-classify pipeline** — if neither, compute on the fly:
-   1. Filename token match: split basename on `_`, check if slug appears.
-   2. Body absolute-path match: `/Users/.../<slug>/...` or `/home/.../<slug>/...` in body.
-   3. Body URL/domain match: domain containing slug.
-   4. `originSessionId` reverse-lookup: glob `~/.claude/projects/*/<sessionId>.jsonl`, decode cwd, take basename.
-   5. `metadata.type: user` fallback → `["generic"]` (user-profile memory is by definition cross-project).
-   6. LLM judge (running Claude session reads body, emits `{projects: [...], confidence}`).
-   7. User override via AskUserQuestion if confidence < 0.7.
+| # | Signal | Confidence | Hot path? | Source |
+|---|---|---|---|---|
+| 1 | **`metadata.project`** in frontmatter | 1.00 | yes | Canonical. Set per the host setup's memory-frontmatter rule |
+| 2 | **Filename suffix** `_<cwd-slug>.md` (or `_generic.md`) | 0.95 | yes | Hook-enforced via `~/.claude/hooks/memory-filename-validate.sh` (`PreToolUse:Write`) — every new memory write has this suffix |
+| 3 | Filename token match (legacy split-on-`_-.`) | 0.70 | no | Subset check vs known slugs; for files predating the suffix convention |
+| 4 | Body absolute-path match (`<registry.cwd>` appears in body) | 0.70 | no | Compares against `references/slug-to-cwd.json` |
+| 5 | Body URL/domain match | 0.60 | no | Hostname tokens vs slug tokens |
+| 6 | `originSessionId` reverse-lookup | 0.80 | no | `resolve-cwd-from-session.ts` decodes `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` |
+| 7 | `metadata.type: user` → `generic` | 0.50 | yes | User-profile memories are cross-project by definition |
+| 8 | LLM judge / user override | varies | n/a | For confidence < 0.7 — running Claude session decides |
 
-Write the resolved tags back to `metadata.project` in the file's frontmatter when running `backfill` mode (one-time backfill). Other modes only update the cache, not the file.
+**Hot path** = `classify.ts` filter (called once per file every preview/reorganize/consolidate run). Only signals #1, #2, #7 fire there — they're O(1) and reliable. The fuzzier signals (#3-#6) only run in `backfill` (`--apply` is gated) and `which-project --explain` (debug only) where the user has explicitly opted into broader matching.
 
-### Cache schema `<scope>/.nf-dream/project-tags.json`
+**Collision handling**: if a file has BOTH `metadata.project` (signal #1) AND a filename suffix (signal #2) and they disagree, **frontmatter wins** (signal #1 is authoritative) but `lint` emits a `filename_suffix_mismatch` finding so the user can resolve the drift.
 
-```json
-{
-  "version": 1,
-  "files": {
-    "project_example_blog.md": {
-      "projects": ["example-blog"],
-      "confidence": 1.0,
-      "signal": "frontmatter|filename_match|body_path|body_url|origin_session|type_user|llm_judge|user_override",
-      "mtime": "2026-05-18T02:40:00Z",
-      "judged_at": "2026-05-18T12:00:00Z"
-    }
-  }
-}
+**`backfill --apply` writes signal #2-#6 results to `metadata.project`** (in frontmatter). Other modes do NOT mutate files based on weak signals; they just filter scope.
+
+### Quick check: `which-project.ts` standalone
+
+For ad-hoc inspection ("which project does this file belong to?"):
+
+```bash
+# Single file — full chain with all signals shown
+bun ~/.claude/skills/nf-dream/scripts/which-project.ts <file> --signals
+
+# Folder summary — counts by project + signal + lists collisions/unresolved
+bun ~/.claude/skills/nf-dream/scripts/which-project.ts <folder>
+
+# JSON for scripting
+bun ~/.claude/skills/nf-dream/scripts/which-project.ts <path> --json
+
+# Skip body-based signals (faster, classify-equivalent scope)
+bun ~/.claude/skills/nf-dream/scripts/which-project.ts <path> --cheap
 ```
 
-`projects` is an array — a file may belong to multiple projects (rare) or to `["generic"]` (cross-project). Filter logic: include file if `slug ∈ projects` OR `"generic" ∈ projects`. Default behavior; can be tightened with `--no-generic` to require exact slug match.
+`classify.ts --explain <file>` is the same lookup but inline within classify (shorter to type if you're already in a classify workflow).
+
+### Multi-project values + default filter behavior
+
+`metadata.project` can be an array (rare): `[example-blog, example-blog-devops]`, file counts toward both. Filter logic: include file if `slug ∈ projects`.
+
+By default, files tagged `generic` are EXCLUDED when `--project <slug>` is given. Pass `--include-generic` to also include them. Rationale: shared-bucket scopes (e.g. an org-wide bucket) mix multiple projects and a slew of cross-project memories (`user_*`, `reference_*`, etc.); when consolidating one project, generic noise hurts more than it helps. Opt into generic when intentionally synthesizing cross-project handoffs.
+
+When filename_suffix (signal #2) matches but frontmatter doesn't, the file is INCLUDED in scope (auto-expand). Classify summary surfaces `matched_by_signal: { frontmatter: N, filename_suffix: M, ... }` so callers can see how many files were promoted into scope via the new convention.
 
 ### Filter application
 
@@ -121,7 +134,7 @@ Once mapping resolved, the scope file list = files tagged for current slug (+ ge
 
 ## Arguments
 
-`/nf-dream [mode] [--project <slug>] [--no-generic]`
+`/nf-dream [mode] [--project <slug>] [--include-generic]`
 
 Positional `mode`:
 
@@ -131,7 +144,7 @@ Positional `mode`:
 Flags:
 
 - `--project <slug>` — override auto-detect from cwd. Use when running from a folder whose basename doesn't match the desired project, or when targeting a project not in current cwd.
-- `--no-generic` — strict: filter to exact slug only, exclude `["generic"]`-tagged files. Default is to include generic.
+- `--include-generic` — also include files tagged `["generic"]` (cross-project). Default is to exclude generic — most consolidation runs want project-specific memories only.
 
 Any other value → reject with the list of allowed modes and flag usage.
 
@@ -150,7 +163,7 @@ For every `*.md` file under the scope (excluding `MEMORY.md`, `HANDOFF.md`, anyt
 
 **Tie-breaking:** Now > Next > Future > Done > Reference > Stale (i.e. an unresolved `Pending` overrides a `SHIPPED` marker — the file is still Now).
 
-**Per-file LLM judge** (used by `consolidate`, `dedupe`, `stale`): when ambiguous, the running Claude session reads the full file content and answers a binary question — `still load-bearing?` (for stale/consolidate) or `same topic as <other>?` (for dedupe). The judge is the current session, not an external API call.
+**Per-file LLM judge** (used by `consolidate`, `dedupe`, `stale`): when ambiguous, the running Claude session reads the full file content and answers a binary question — `still load-bearing?` (for stale/consolidate) or `same topic as <other>?` (for dedupe). This is the same pattern as ContextQ's `judgeArchive` but the judge is the current session, not an external API call.
 
 ## Safety rules (apply to ALL write modes)
 
@@ -172,7 +185,7 @@ For every `*.md` file under the scope (excluding `MEMORY.md`, `HANDOFF.md`, anyt
    ```
 6. **No cross-scope writes.** Only touch files under the resolved scope folder.
 7. **Atomic-ish:** if any step fails mid-write, do NOT continue. Surface error + the tarball path so user can extract to restore: `tar -xzf <scope>/.snapshots/full-<STAMP>.tar.gz -C <restore-dir>`.
-8. **Refuse if working tree dirty in memory submodule.** If `<scope>` is inside a git submodule (a common pattern when you want memory tracked separately from your dotfiles repo), run `git -C <scope> status --short` first. If output non-empty, STOP and ask the user to commit/stash existing memory edits before consolidating.
+8. **Refuse if working tree dirty in memory submodule.** If `<scope>` is inside a git submodule (`~/.claude/memory/`), run `git -C <scope> status --short` first. If output non-empty, STOP and ask the user to commit/stash existing memory edits before consolidating.
 9. **Print tarball path to user** after every successful write run: `Backup: <scope>/.snapshots/full-<STAMP>.tar.gz` so they can save it elsewhere if they want longer retention than 14d.
 
 ## Mode: preview (default, read-only)
@@ -223,7 +236,7 @@ No writes, no AskUserQuestion. Just report.
 
 ## Mode: normalize
 
-**Folder-wide structural frontmatter compliance.** Brings legacy memory files in line with the canonical frontmatter shape (see `references/filename-prefix-to-type.md`), without classifying project/cwd content.
+**Folder-wide structural frontmatter compliance.** Brings legacy memory files in line with the host setup's memory-frontmatter shape, without classifying project/cwd content.
 
 Three responsibilities (idempotent; re-running produces no further changes):
 
@@ -239,10 +252,10 @@ If user wants both: run `normalize` first (mechanical cleanup), then `backfill` 
 
 ### Implementation
 
-The mode delegates to `scripts/normalize.py`:
+The mode delegates to `scripts/normalize.ts`:
 
 ```bash
-python3 ~/.claude/skills/nf-dream/scripts/normalize.py <scope> [--dry-run] [--json]
+bun ~/.claude/skills/nf-dream/scripts/normalize.ts <scope> [--dry-run] [--json]
 ```
 
 The script reads `references/slug-to-cwd.json` for cwd lookups and the prefix table is hard-coded (matches `references/filename-prefix-to-type.md`).
@@ -251,11 +264,11 @@ The script reads `references/slug-to-cwd.json` for cwd lookups and the prefix ta
 
 1. Resolve scope folder (per "Scope resolution — fallback chain"). Refuse `--project` flag — normalize is folder-wide; passing `--project` is an error with a one-line note about backfill.
 2. Refuse if memory submodule has uncommitted changes (per Safety rules — same rule as other write modes).
-3. Run `scripts/normalize.py <scope> --dry-run --json` to compute the plan.
+3. Run `scripts/normalize.ts <scope> --dry-run --json` to compute the plan.
 4. Print human-readable summary of the plan: per-file action counts (`moved-top:N`, `added-type:M`, `added-cwd:K`), plus list of files that need manual fix (no frontmatter, or no recognized prefix and missing type).
 5. `AskUserQuestion` (header `Apply normalize`, single-select): `"Apply N normalizations across <scope>?"` — `Yes, apply` / `Show full diff (first 30 files)` / `Cancel`.
 6. On `Show full diff`: pipe through a per-file action list capped at 30 rows, then re-confirm.
-7. On `Yes, apply`: full tarball snapshot per Safety rules, then run `scripts/normalize.py <scope>` without `--dry-run`. Print `Backup: <tarball-path>` + count summary.
+7. On `Yes, apply`: full tarball snapshot per Safety rules, then run `scripts/normalize.ts <scope>` without `--dry-run`. Print `Backup: <tarball-path>` + count summary.
 8. Snapshot retention sweep.
 
 ### Limitations
@@ -365,19 +378,70 @@ Move aged session-end states into `<scope>/archive/YYYY-MM/`. Uses Claude sessio
 
 ## Mode: dedupe
 
-Find files that overlap in topic and propose merging. NEVER auto-merges — always uses AskUserQuestion per pair. **Honors project filter** — pairs are formed within filtered files only. Cross-project duplicates (e.g. same fact written for two different projects) are NOT detected; user accepts this trade-off as it's rare and folder-wide dedupe is too risky.
+Find files that overlap in topic. Emits candidate pairs only — does NOT merge. **Honors project filter** — pairs are formed within filtered files only. Cross-project duplicates are NOT detected (user accepts this trade-off).
 
 1. Run classification on filtered scope.
-2. Build candidate pairs from filtered files only:
+2. Build candidate pairs via `dedupe-candidates.ts`:
    - Files in the same bucket (Now ∩ Now, Done ∩ Done, etc.) with filename similarity > 60% (Levenshtein on stem) OR with overlapping topic keywords in first heading.
-3. For each pair, the Claude session reads both and judges: `"Same topic? If yes, which file should be the canonical destination?"`.
-4. For each pair flagged as "same topic", AskUserQuestion (per pair, header `Merge?`, options):
-   - `Merge A into B (B becomes canonical, A moves to archive)`
-   - `Merge B into A (A becomes canonical, B moves to archive)`
-   - `Different topics — skip`
-   - `Cancel dedupe`
-5. On merge: the Claude session writes a consolidated version of the canonical file (preserving both sources' load-bearing content). Snapshot the canonical first. Move the absorbed file to `archive/YYYY-MM/`. Append breadcrumb.
-6. Update `MEMORY.md` to drop the absorbed entry, keep canonical entry (re-write its hook if needed).
+3. Print pair list. The Claude session may then read each pair and judge `"Same topic?"` for the user. To actually merge: use `Mode: merge` below — dedupe stops here.
+
+## Mode: merge
+
+Merge two or more memory files into one. Two execution paths:
+
+### Path B — staged + manual finalize (script-only)
+
+Mechanical. User picks the pair (or accepts dedupe's top suggestion), script writes a staged DRAFT under `<scope>/.staging/merge-<stamp>/<merged>.md` with each source's body wrapped in `<!-- FROM: ... -->` markers. User edits the draft to consolidate, then runs the finalizer.
+
+```bash
+# Stage from explicit pair
+bun merge-stage.ts --files <fileA> <fileB> [--name <merged-name>]
+
+# Stage top pair from dedupe-candidates
+bun merge-stage.ts --from-dedupe <scope> --top
+# Or pick a non-top pair
+bun merge-stage.ts --from-dedupe <scope> --pick 2
+
+# Finalize (after editing the draft)
+bun merge-apply.ts <staged-file>
+```
+
+Refuse conditions (exit code 2):
+- Sources have different `metadata.project`
+- Sources have different `metadata.cwd`
+- Sources have different `metadata.type`
+- Final target filename already exists in scope root
+
+Frontmatter merge rules:
+- Scalar fields (`type`, `project`, `cwd`): first source wins (must match across sources)
+- `description`: longest non-empty
+- `tags`, `related`: union (sources' self-references removed)
+- NEW fields: `merged_from: [<srcA>, <srcB>]`, `merged_at: <ISO date>`
+
+### Path C — LLM-orchestrated (skill flow)
+
+When the user invokes `/nf-dream merge --project <slug>`, the skill orchestrates:
+
+1. **Snapshot first** (per Safety rule): `bun snapshot.ts create <scope>`.
+2. **Get candidates**: `bun dedupe-candidates.ts <scope> --project <slug> --json`.
+3. **For each pair** (or each explicit pair from `--files`):
+   1. Call `bun merge-stage.ts --files A B` to write the draft.
+   2. Skill (the running LLM session) reads the draft + both source bodies, then **rewrites the staged file's body** with a coherent consolidated narrative — resolving contradictions, deduplicating overlapping points, preserving load-bearing facts from both. Frontmatter from `merge-stage.ts` stays as-is (it's already merged correctly).
+   3. `AskUserQuestion` (header `Apply merge?`, single-select):
+      - `Yes, apply` → call `bun merge-apply.ts <staged>`. Sources → archive, merged file → scope root, MEMORY.md updated.
+      - `Show diff first` → print staged content; ask again.
+      - `Skip this pair` → leave staging dir on disk (user can finalize manually later).
+      - `Cancel merge mode` → leave all staging dirs, stop.
+4. **Retention sweep**: `bun snapshot.ts sweep <scope>`.
+
+Path C is what `/nf-dream merge` actually does. Path B is the script-level building block that Path C orchestrates — and that user can also invoke directly when running without an LLM session.
+
+### Safety + atomicity
+
+- Sources are **moved** (renameSync), not copied + deleted. Atomic within same filesystem.
+- If `merge-apply.ts` fails mid-flight (rare — only filesystem error), some files may already be moved. No auto-rollback. Use `bun rollback.ts tarball <scope> <stamp>` with the pre-merge tarball.
+- Staging dirs are auto-cleaned only on successful `merge-apply`. Failed/cancelled merges leave staging dir on disk for inspection.
+- Merging 3+ files in one go is supported (pass `--files A B C`), but rarely useful — better to merge pair-by-pair so contradictions can be resolved at each step.
 
 ## Mode: stale
 
@@ -395,7 +459,7 @@ Surface stale candidates without writing anything destructive. User decides per 
 Health check, no writes. **Folder-wide exception** — reports issues across the entire scope folder regardless of project filter, since lint is read-only and finds problems that span projects (orphan files, broken cross-links, stale cache entries).
 
 1. Resolve scope.
-2. Delegate the structural checks to `scripts/lint.py <scope>`. The script reports:
+2. Delegate the structural checks to `scripts/lint.ts <scope>`. The script reports:
    - `MEMORY.md` size > 20 KB → warn (recommend `/nf-dream reorganize`).
    - Any file > 30 KB → warn (suggest split).
    - `MEMORY.md` lines that link to a file that doesn't exist (broken link).
@@ -438,7 +502,7 @@ Cannot rollback further than 14 days for tarball, 7 days for MEMORY.md-only snap
 
 ## Mode: backfill
 
-Tags `*.md` files in the scope folder with `metadata.project` (+ `metadata.cwd` if derivable). Brings existing memory up to a consistent format with project tagging. After backfill, filter on subsequent runs works reliably.
+Tags `*.md` files in the scope folder with `metadata.project` (+ `metadata.cwd` if derivable). Brings existing memory up to the format expected by the host setup's memory-frontmatter rule. After backfill, filter on subsequent runs works reliably.
 
 **Scope is picked by user at start, NOT folder-wide by default.** The default option is "current project only" — most runs should stay narrow.
 
@@ -500,11 +564,11 @@ For each of the K low-confidence files, AskUserQuestion (per file, multi-select 
 2. For each file in the write plan:
    - Read frontmatter using a YAML parser that preserves key order.
    - Inject `metadata.project: <slug-or-array>`. If multiple slugs, write as YAML array.
-   - Inject `metadata.cwd: <absolute-path>` if derivable from `originSessionId` reverse-lookup OR if the slug maps unambiguously to a known cwd from `references/slug-to-cwd.json`. Skip otherwise.
+   - Inject `metadata.cwd: <absolute-path>` if derivable from `originSessionId` reverse-lookup OR if the slug maps unambiguously to a known cwd (e.g. `example-blog` → `~/projects/example-blog`). Skip otherwise.
    - Preserve body verbatim. Do NOT re-flow YAML beyond inserting the new keys.
 3. Update `<scope>/.nf-dream/project-tags.json` cache with the FULL pipeline output — including cached-only entries (other projects) when scope = "Current project only". Cache is always populated for every classified file, even those not written to disk.
 4. Snapshot retention sweep.
-5. Print per-slug count summary + `Backup: <tarball-path>`. For "Current project only" scope, end with a hint: `Tip: run /nf-dream backfill again from another project's cwd to tag the remaining X cached files.`
+5. Print per-slug count summary + `Backup: <tarball-path>`. For "Current project only" scope, end with a hint: `Tip: run /nf-dream backfill again from another project's cwd (example-portfolio, example-infra, ...) to tag the remaining X cached files.`
 
 ### Idempotency & re-runs
 
@@ -525,13 +589,13 @@ Use this as the one-shot "tidy up memory" command. Each sub-step still snapshots
 
 ## Mode: translate
 
-Translate non-English memory content into English so the description-based relevance ranking works better in future sessions. **Honors project filter** — only filtered files are touched. Verbatim user quotes and locale-specific named entities are preserved.
+Translate non-English memory content into English so the description-based relevance ranking works better in future sessions. **Honors project filter**, only filtered files are touched. Verbatim user quotes and locale-specific named entities are preserved.
 
-Not part of `/nf-dream full` — opt-in only, because semantic transformation deserves explicit invocation.
+Not part of `/nf-dream full`, opt-in only, because semantic transformation deserves explicit invocation.
 
 ### Pre-scan
 
-For each filtered `*.md` file (excluding `MEMORY.md`, `HANDOFF*.md`, `archive/`), count lines containing non-ASCII characters that indicate non-English content. The shipped detection targets Vietnamese diacritics; adapt to your own language by editing `scripts/translate_prescan.py`:
+For each filtered `*.md` file (excluding `MEMORY.md`, `HANDOFF*.md`, `archive/`), count lines containing non-ASCII characters that indicate non-English content. The shipped detection targets Vietnamese diacritics; adapt to your own language by editing `scripts/translate-prescan.ts`:
 
 ```bash
 grep -cE "[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđÀ-Ỹ]" "$f"
@@ -559,9 +623,9 @@ Per file picked:
 - Preserve original content when:
   - Line is a blockquote (`> `) or attributed quote (`User said:`, etc.).
   - Token is a locale-specific named entity (place, person, brand, internal process label).
-  - Section is meta-discussion of a language convention.
+  - Section is meta-discussion of a non-English-language convention.
 - If a passage mixes prose + quote and the judge is uncertain, default to KEEPING the original passage. Better to leave the original than mistranslate.
-- `[[wikilink]]` slugs are already ASCII — leave alone even if the target file is still in the source language.
+- `[[wikilink]]` slugs are already ASCII, leave alone even if the target file is still in another language.
 
 ### Write
 
@@ -579,7 +643,7 @@ Per file picked:
 
 ## Output style
 
-- Use the host setup's interface language for headings/summary lines if forced by the system prompt, but keep section keys (`## Now`, `## Next`, ...) in English so they're greppable across sessions.
+- If the host setup enforces a non-English interface language, you may translate headings/summary lines accordingly, but keep section keys (`## Now`, `## Next`, ...) in English so they're greppable across sessions.
 - Never echo full file contents to chat. Counts, filenames, mtimes, and short reason markers only.
 - After every write mode, print one-line summary + path to snapshot for rollback.
 
@@ -589,57 +653,75 @@ Per file picked:
 - A memory-frontmatter rule in the host setup (project-level) is what auto-fills `metadata.project`, `metadata.cwd`, `metadata.tags`, `metadata.related` when Claude saves NEW memory. `nf-dream` reads `metadata.project` as the authoritative source-of-truth for filter. For pre-rule files: run `/nf-dream normalize` to fix shape (move misplaced keys + add type) then `/nf-dream backfill` to tag project/cwd.
 - `references/slug-to-cwd.json` — authoritative slug → absolute cwd registry consumed by both `normalize` (cwd backfill when project known) and `backfill` (cwd derivation for newly-classified files). Edit when a new project comes online.
 - `references/filename-prefix-to-type.md` — convention for inferring `metadata.type` from filename prefix. Used by `normalize`; documented for human eyeballing.
-- If `<scope>` is inside a git submodule (e.g. memory tracked as its own repo), commit/push happens INSIDE that submodule, not the parent repo.
-- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — source for `originSessionId` reverse-lookup during pre-classify pipeline. Encoding: `/` → `-` in absolute path.
-
 ## Scripts inventory
 
-All under `scripts/`. Pure Python, no third-party deps. All accept `--json` for programmatic consumption; write-mode scripts default to dry-run, require `--apply` to mutate disk.
+All under `scripts/`. Bun TypeScript, no third-party deps (uses `node:*` modules only). Invoke with `bun <script>.ts`. All accept `--json` for programmatic consumption; write-mode scripts default to dry-run, require `--apply` to mutate disk.
 
 | Script | Mode(s) | Purpose |
 |---|---|---|
-| `_lib.py` | shared | Frontmatter parser, registry loader, file iteration helpers |
-| `classify.py` | preview / reorganize / consolidate / stale / full | Bucket files (Now/Next/Future/Done/Reference/Stale) via heuristics + tie-break |
-| `normalize.py` | normalize | Move misplaced top-level keys + add `metadata.type` from prefix + add `metadata.cwd` from registry |
-| `backfill.py` | backfill | 5-step mechanical project tagging (filename / body path / body URL / origin session / type=user fallback). Defers low-confidence (< 0.7) to Claude / user |
-| `consolidate.py` | consolidate | Build move plan (aged session-end + Stale) + execute `mv` to `archive/YYYY-MM/` + update breadcrumb |
-| `dedupe_candidates.py` | dedupe | Filename-stem Levenshtein + heading keyword overlap → candidate pairs JSON for Claude judge |
-| `reorganize.py` | reorganize | Rewrite MEMORY.md with per-project bucket sections; preserve out-of-scope entries verbatim |
-| `handoff_prep.py` | handoff | Bundle Now bucket (full) + Next bucket (top section) into JSON for Claude to synthesize HANDOFF-<slug>.md |
-| `translate_prescan.py` | translate | Per-file non-English diacritic counts + bucket (none/light/mixed/heavy) → JSON for Claude pick |
-| `lint.py` | lint | Read-only health check including misplaced-top-level-keys detection |
-| `rollback.py` | rollback | List tarballs + last batch, restore tarball (with pre-rollback snapshot), or un-archive last batch |
-| `snapshot.py` | all write modes | Create tarball + per-file index snapshots, retention sweep (14d tarball / 7d per-file), list |
-| `resolve_cwd_from_session.py` | backfill / lint | Reverse-lookup cwd from `originSessionId` via `~/.claude/projects/<encoded-cwd>/` scan |
+| `_lib.ts` | shared | Frontmatter parser, registry loader, file iteration helpers |
+| `classify.ts` | preview / reorganize / consolidate / stale / full | Bucket files (Now/Next/Future/Done/Reference/Stale) via heuristics + tie-break |
+| `normalize.ts` | normalize | Move misplaced top-level keys + add `metadata.type` from prefix + add `metadata.cwd` from registry |
+| `backfill.ts` | backfill | 5-step mechanical project tagging (filename / body path / body URL / origin session / type=user fallback). Defers low-confidence (< 0.7) to Claude / user |
+| `consolidate.ts` | consolidate | Build move plan (aged session-end + Stale) + execute `mv` to `archive/YYYY-MM/` + update breadcrumb |
+| `dedupe-candidates.ts` | dedupe | Filename-stem Levenshtein + heading keyword overlap → candidate pairs JSON for Claude judge |
+| `reorganize.ts` | reorganize | Rewrite MEMORY.md with per-project bucket sections; preserve out-of-scope entries verbatim |
+| `handoff-prep.ts` | handoff | Bundle Now bucket (full) + Next bucket (top section) into JSON for Claude to synthesize HANDOFF-<slug>.md |
+| `translate-prescan.ts` | translate | Per-file non-English diacritic counts + bucket (none/light/mixed/heavy) → JSON for Claude pick |
+| `lint.ts` | lint | Read-only health check including misplaced-top-level-keys detection |
+| `rollback.ts` | rollback | List tarballs + last batch, restore tarball (with pre-rollback snapshot), or un-archive last batch |
+| `snapshot.ts` | all write modes | Create tarball + per-file index snapshots, retention sweep (14d tarball / 7d per-file), list |
+| `resolve-cwd-from-session.ts` | backfill / lint | Reverse-lookup cwd from `originSessionId` via `~/.claude/projects/<encoded-cwd>/` scan |
+| `which-project.ts` | ad-hoc / debug | Standalone "which project does this file belong to?" CLI. Runs full fallback chain incl. body-based signals. `<file>` or `<folder>` mode |
+| `merge-stage.ts` | merge | Stage a draft merged memory file from 2+ sources. Writes draft + provenance sidecar to `<scope>/.staging/merge-<stamp>/`. Refuses on project/cwd/type mismatch |
+| `merge-apply.ts` | merge | Finalize a staged merge: promote draft to scope root, archive sources, update breadcrumb + MEMORY.md, clean staging |
+| `dream-scan.ts` | preview / stale / lint / full | Standalone fast scanner (read-only) — alternative entry point to `classify.ts` + `lint.ts` |
+| `dream-lint.ts` | lint | Focused frontmatter-only validator (subset of `lint.ts`) |
 
 ### Calling pattern from skill
 
 ```bash
 SCRIPTS=~/.claude/skills/nf-dream/scripts
 
-# preview = classify
-python3 $SCRIPTS/classify.py <scope> [--project <slug>] --json
+# preview = classify (default: generic excluded; add --include-generic to opt in)
+bun $SCRIPTS/classify.ts <scope> [--project <slug>] [--include-generic] --json
 
 # normalize (write mode)
-python3 $SCRIPTS/snapshot.py create <scope>          # snapshot first
-python3 $SCRIPTS/normalize.py <scope>                # apply
-python3 $SCRIPTS/snapshot.py sweep <scope>           # retention sweep
+bun $SCRIPTS/snapshot.ts create <scope>          # snapshot first
+bun $SCRIPTS/normalize.ts <scope>                # apply
+bun $SCRIPTS/snapshot.ts sweep <scope>           # retention sweep
 
 # backfill (per-project default)
-python3 $SCRIPTS/backfill.py <scope> --json          # dry-run plan
-python3 $SCRIPTS/backfill.py <scope> --apply         # write
+bun $SCRIPTS/backfill.ts <scope> --json          # dry-run plan
+bun $SCRIPTS/backfill.ts <scope> --apply         # write
 
 # consolidate
-python3 $SCRIPTS/consolidate.py <scope> --project <slug> --json   # plan
-python3 $SCRIPTS/consolidate.py <scope> --project <slug> --apply  # execute
+bun $SCRIPTS/consolidate.ts <scope> --project <slug> --json   # plan
+bun $SCRIPTS/consolidate.ts <scope> --project <slug> --apply  # execute
 
 # rollback
-python3 $SCRIPTS/rollback.py list <scope>
-python3 $SCRIPTS/rollback.py tarball <scope> <stamp>
-python3 $SCRIPTS/rollback.py batch <scope>
+bun $SCRIPTS/rollback.ts list <scope>
+bun $SCRIPTS/rollback.ts tarball <scope> <stamp>
+bun $SCRIPTS/rollback.ts batch <scope>
+
+# which-project (ad-hoc lookup, debug)
+bun $SCRIPTS/which-project.ts <file>              # single file, winning signal only
+bun $SCRIPTS/which-project.ts <file> --signals    # show every signal that fired
+bun $SCRIPTS/which-project.ts <folder>            # folder summary + collisions + unresolved
+bun $SCRIPTS/classify.ts --explain <file>         # equivalent --explain on classify.ts
+
+# merge (stage + finalize)
+bun $SCRIPTS/merge-stage.ts --files A B           # explicit pair
+bun $SCRIPTS/merge-stage.ts --from-dedupe <scope> --top   # top pair from dedupe
+bun $SCRIPTS/merge-stage.ts --files A B --dry-run         # preview plan only
+# user/LLM edits the staged draft, then:
+bun $SCRIPTS/merge-apply.ts <staged-file>         # archive sources + promote merged
 ```
 
 The skill orchestrates: scope resolution + AskUserQuestion confirms + LLM judge for low-confidence backfill / dedupe pairs / consolidate ambiguity. The scripts handle the mechanical heavy lifting (file IO, regex, JSON).
+- If `<scope>` is inside a git submodule (e.g. memory tracked as its own repo), commit/push happens INSIDE that submodule, not the parent repo.
+- `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` — source for `originSessionId` reverse-lookup during pre-classify pipeline. Encoding: `/` → `-` in absolute path.
+- ContextQ `/api/dream` (`shared-context-server`) — design inspiration. The LLM-judge + soft-archive + stale-detection patterns this skill mirrors come from there.
 
 ## Anti-patterns
 
