@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Resolve the target memory folder for the /memoria skill.
+// Resolve the target memory folder for the /nf-memoria skill.
 //
 // Cascade (first match wins):
 //   1. $CLAUDE_COWORK_MEMORY_PATH_OVERRIDE in current env
@@ -24,7 +24,7 @@ import { $ } from "bun";
 
 const HOME = homedir();
 
-const HELP = `Resolve the target memory folder for the /memoria skill.
+const HELP = `Resolve the target memory folder for the /nf-memoria skill.
 
 Cascade (first match wins):
   1. $CLAUDE_COWORK_MEMORY_PATH_OVERRIDE in current env

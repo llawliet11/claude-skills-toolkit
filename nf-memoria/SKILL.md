@@ -1,11 +1,11 @@
 ---
-name: memoria
-description: This skill should be used when the user says "/memoria", "save state", "end session để continue sau", "memory để mai tiếp", "save what's next", "write memoria", or any variant indicating they want to capture in-flight context into a memory file so a future session of the SAME repo can resume. Writes to the project's configured memory folder (resolves env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE in .claude/settings.local.json, falls back to user-scope autoMemoryDirectory, then to the binary's own default `~/.claude/projects/<sanitized-cwd>/memory/` so the handoff colocates with whatever auto-memory the binary already writes for this session). Writes canonical memory frontmatter (type=project, project=<git toplevel basename>, cwd=<absolute>, tags=[handoff, in-progress]). Memory file content (frontmatter values + body) is written in English by default. Optional argument is a short topic phrase used in the filename slug. After writing the handoff file, also runs a general auto-memory pass: scans the conversation for durable user/feedback/project/reference learnings, writing new entries or updating same-topic ones in place.
+name: nf-memoria
+description: This skill should be used when the user says "/nf-memoria", "save state", "end session để continue sau", "memory để mai tiếp", "save what's next", "write memoria", or any variant indicating they want to capture in-flight context into a memory file so a future session of the SAME repo can resume. Writes to the project's configured memory folder (resolves env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE in .claude/settings.local.json, falls back to user-scope autoMemoryDirectory, then to the binary's own default `~/.claude/projects/<sanitized-cwd>/memory/` so the handoff colocates with whatever auto-memory the binary already writes for this session). Writes canonical memory frontmatter (type=project, project=<git toplevel basename>, cwd=<absolute>, tags=[handoff, in-progress]). Memory file content (frontmatter values + body) is written in English by default. Optional argument is a short topic phrase used in the filename slug. After writing the handoff file, also runs a general auto-memory pass: scans the conversation for durable user/feedback/project/reference learnings, writing new entries or updating same-topic ones in place.
 argument-hint: <short-topic>
 disable-model-invocation: true
 ---
 
-# memoria, same-repo state memory
+# nf-memoria, same-repo state memory
 
 Capture the active conversation's in-flight state into a memory file so the user can end the current session and a future session of the SAME repo picks up the thread without re-discovery.
 
@@ -18,9 +18,9 @@ The user is mid-task, wants to stop, and asks for a handoff. Skill ALWAYS writes
 Run the helper script. It encodes the full cascade (env, project settings, user settings, binary default), expands `~`, `mkdir -p` the folder, and aborts on the recursive-memory safeguard.
 
 ```bash
-"$CLAUDE_PROJECT_DIR/skills/memoria/scripts/resolve-memory-folder.js"
+"$CLAUDE_PROJECT_DIR/skills/nf-memoria/scripts/resolve-memory-folder.js"
 # or, if $CLAUDE_PROJECT_DIR is unset:
-~/.claude/skills/memoria/scripts/resolve-memory-folder.js
+~/.claude/skills/nf-memoria/scripts/resolve-memory-folder.js
 ```
 
 The script is Bun (`#!/usr/bin/env bun`). Output is two lines on stdout: `path=<absolute>` and `source=<env|local-env|local-auto|user|bindef>`. Exit codes:
@@ -233,7 +233,7 @@ Then stop. Do NOT ask "anything else?". Do NOT offer to commit. Do NOT exit the 
 - **No git repo**, `git rev-parse --show-toplevel` fails. Fall back to `pwd` for both `cwd` and basename. Note this in the description.
 - **Inside a worktree**, resolve to the real repo via `git rev-parse --path-format=absolute --git-common-dir` and walk to `worktrees/../..`. Easier: use `git rev-parse --show-superproject-working-tree` or check `.git` file pointing to `gitdir: .../worktrees/<slug>`. Practical shortcut: `git worktree list | head -1 | awk '{print $1}'` gives the main toplevel.
 - **Resolved folder is the binary default (`~/.claude/projects/<sanitized-cwd>/memory/`)**, that's the per-session folder the binary uses by default. Handoff lives next to whatever auto-memory the binary already wrote. `metadata.project` stays the git toplevel basename (NOT the sanitized cwd, NOT `generic`) so per-project filtering still works.
-- **User explicitly names a folder via argument** (e.g. `/memoria og-template`), the argument is the topic, NOT a folder override. Folder resolution still follows Step 1.
+- **User explicitly names a folder via argument** (e.g. `/nf-memoria og-template`), the argument is the topic, NOT a folder override. Folder resolution still follows Step 1.
 
 ## Resume protocol (informational, for the future session)
 
