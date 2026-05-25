@@ -15,15 +15,15 @@ The user is mid-task, wants to stop, and asks for a handoff. Skill ALWAYS writes
 
 ## Step 1, Resolve target memory folder
 
-Run the helper script. It encodes the full cascade (env, project settings, user settings, binary default), expands `~`, `mkdir -p` the folder, and aborts on the recursive-memory safeguard.
+Run the helper binary. It encodes the full cascade (env, project settings, user settings, binary default), expands `~`, `mkdir -p` the folder, and aborts on the recursive-memory safeguard.
 
 ```bash
-"$CLAUDE_PROJECT_DIR/skills/nf-memoria/scripts/resolve-memory-folder.js"
+"$CLAUDE_PROJECT_DIR/skills/nf-memoria/bin/resolve-memory-folder"
 # or, if $CLAUDE_PROJECT_DIR is unset:
-~/.claude/skills/nf-memoria/scripts/resolve-memory-folder.js
+~/.claude/skills/nf-memoria/bin/resolve-memory-folder
 ```
 
-The script is Bun (`#!/usr/bin/env bun`). Output is two lines on stdout: `path=<absolute>` and `source=<env|local-env|local-auto|user|bindef>`. Exit codes:
+The binary is a Go program (source at `go/main.go`, build via `bash go/build.sh`). It must be built once per host before first use; see "Building the helper" below. Output is two lines on stdout: `path=<absolute>` and `source=<env|local-env|local-auto|user|bindef>`. Exit codes:
 
 - `0`, resolved and folder ready
 - `2`, recursive-memory conflict (resolved path inside current repo; abort and surface the conflict to the user)
@@ -31,13 +31,13 @@ The script is Bun (`#!/usr/bin/env bun`). Output is two lines on stdout: `path=<
 
 Print both lines to chat before writing so the user can interrupt if the source or path is wrong.
 
-The cascade the script implements, for reference:
+The cascade the binary implements, for reference:
 
 1. `$CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` in current env.
 2. `<git-toplevel>/.claude/settings.local.json`, `.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`.
 3. Same file, `.autoMemoryDirectory`.
 4. `~/.claude/settings.json`, `.autoMemoryDirectory`.
-5. Binary default: `~/.claude/projects/<sanitized-pwd>/memory/` where `<sanitized-pwd>` = `$PWD` with `/` and `.` replaced by `-`. Always defined; the script `mkdir -p`s it.
+5. Binary default: `~/.claude/projects/<sanitized-pwd>/memory/` where `<sanitized-pwd>` = `$PWD` with `/` and `.` replaced by `-`. Always defined; the helper `mkdir -p`s it.
 
 ## Step 2, Gather handoff content from current conversation
 
@@ -208,15 +208,40 @@ Constraints:
 
 ## Step 8, Report and stop
 
-Print to chat:
+Output is a colorful, clickable report rendered in **markdown**. Claude Code TUI strips raw ANSI/OSC8 escape sequences from chat output (those only render in statusline / raw printf). Markdown bold, italics, code spans, and link syntax all render with terminal styling in the TUI. Each filename is a markdown link to `vscode://file/<abs-path>` so the user can click to open it in VS Code.
 
-- Resolved memory folder
-- Full path of the new handoff file
-- A 3-line preview: the description, the first "What's next" item, and the resume hint
-- Auto-memory pass results from Step 7: each line `+ wrote <slug>`, `~ updated <slug>`, or `none`
-- The resume phrase the user can paste in the next session: `resume from handoff [[<slug>]]`
+### Render template
 
-Then stop. Do NOT ask "anything else?". Do NOT offer to commit. Do NOT exit the session, the user does that themselves.
+Emit exactly this markdown (substitute placeholders; preserve blank lines):
+
+```markdown
+**Memory folder:** `<resolved-folder>` *(source: <source>)*
+
+**Files written:**
+- `+` [`<filename>`](vscode://file/<abs-path>), *<description from frontmatter>*
+- `~` [`<filename>`](vscode://file/<abs-path>), *<description from frontmatter>*
+
+**Preview:**
+- **Where:** <one-line synthesis of "Where I left off">
+- **Next:** <first item from "What's next">
+
+**Resume:** `resume from handoff [[<slug>]]`
+```
+
+Notes:
+
+- `<abs-path>` is the absolute path to the file (resolved memory folder plus `/` plus filename). The double slash after `vscode://file` is correct for Unix absolute paths.
+- `+` marker = new file. `~` marker = updated-in-place file (only Step 7 auto-memory uses `~`; the handoff file itself is always `+`).
+- Do NOT emit any `\033[...m` ANSI codes or OSC8 `\033]8;;...` sequences in the chat, they render as literal text in the TUI. Markdown is the only path to styled chat output.
+
+### Order of "Files written"
+
+1. The new handoff file (always `+`).
+2. Each auto-memory file from Step 7, `+` if newly written, `~` if updated in place. If Step 7 produced none, omit those lines entirely (do not print a placeholder line).
+
+If a file lives outside the resolved memory folder (rare), use its true absolute path in the markdown link.
+
+After the report, stop. Do NOT ask "anything else?". Do NOT offer to commit. Do NOT exit the session, the user does that themselves.
 
 ## What NOT to do
 
@@ -232,8 +257,23 @@ Then stop. Do NOT ask "anything else?". Do NOT offer to commit. Do NOT exit the 
 
 - **No git repo**, `git rev-parse --show-toplevel` fails. Fall back to `pwd` for both `cwd` and basename. Note this in the description.
 - **Inside a worktree**, resolve to the real repo via `git rev-parse --path-format=absolute --git-common-dir` and walk to `worktrees/../..`. Easier: use `git rev-parse --show-superproject-working-tree` or check `.git` file pointing to `gitdir: .../worktrees/<slug>`. Practical shortcut: `git worktree list | head -1 | awk '{print $1}'` gives the main toplevel.
-- **Resolved folder is the binary default (`~/.claude/projects/<sanitized-cwd>/memory/`)**, that's the per-session folder the binary uses by default. Handoff lives next to whatever auto-memory the binary already wrote. `metadata.project` stays the git toplevel basename (NOT the sanitized cwd, NOT `generic`) so per-project filtering still works.
+- **Resolved folder is the binary default (`~/.claude/projects/<sanitized-cwd>/memory/`)**, that is the per-session folder the binary uses by default. Handoff lives next to whatever auto-memory the binary already wrote. `metadata.project` stays the git toplevel basename (NOT the sanitized cwd, NOT `generic`) so per-project filtering still works.
 - **User explicitly names a folder via argument** (e.g. `/nf-memoria og-template`), the argument is the topic, NOT a folder override. Folder resolution still follows Step 1.
+
+## Building the helper
+
+The Go source lives at `go/main.go` with a build script at `go/build.sh`. After cloning this skill into `~/.claude/skills/nf-memoria/`, build the binary once per host:
+
+```bash
+cd ~/.claude/skills/nf-memoria/go
+bash build.sh        # builds for current OS/arch into ../bin/resolve-memory-folder
+# or
+bash build.sh --all  # cross-compile darwin-arm64, linux-amd64, linux-arm64
+```
+
+Go 1.22+ is required. The binary has no runtime dependencies. To rebuild after editing the source, re-run `bash go/build.sh`.
+
+If your host does not have Go installed and you do not want to install it, port `go/main.go` to your preferred runtime (the cascade logic is short and self-contained), or skip this skill.
 
 ## Resume protocol (informational, for the future session)
 
